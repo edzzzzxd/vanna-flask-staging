@@ -1,11 +1,14 @@
-from dotenv import load_dotenv
-load_dotenv()
+
 
 from functools import wraps
 from flask import Flask, jsonify, Response, request, redirect, url_for
+from werkzeug.security import generate_password_hash, check_password_hash
 import flask
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from cache import MemoryCache
+from db import Database
 
 app = Flask(__name__, static_url_path='')
 
@@ -21,8 +24,8 @@ from vanna.flask import VannaFlaskApp
 
 # vn = VannaDefault(model=os.environ['VANNA_MODEL'], api_key=os.environ['VANNA_API_KEY'])
 # vn = VannaDefault(model='jormodel', api_key='d8a6af0b998948c1bbf5b2cc92c7e2bf')
-vn = VannaDefault(model='projai', api_key='56c10509c96a415d83d95c089d156c35')
-vn.connect_to_mysql(host='db-mysql-sgp1-proj-ai-dev-do-user-11333017-0.g.db.ondigitalocean.com', dbname='dev', user='doadmin', password='AVNS_VsqqAPzLMCSlHjSg8ME', port=25060)
+vn = VannaDefault(model=os.getenv('VANNA_MODEL'), api_key=os.getenv('VANNA_API_KEY'))
+vn.connect_to_mysql(host=os.getenv('DB_HOST'), dbname=os.getenv('DB_DATABASE'), user=os.getenv('DB_USER'), password=os.getenv('DB_PASSWORD'), port=int(os.getenv('DB_PORT')))
 # vn.connect_to_sqlite('https://vanna.ai/Chinook.sqlite')
 # vn.connect_to_snowflake(
 #     account=os.environ['SNOWFLAKE_ACCOUNT'],
@@ -32,6 +35,7 @@ vn.connect_to_mysql(host='db-mysql-sgp1-proj-ai-dev-do-user-11333017-0.g.db.ondi
 #     warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
 # )
 
+db = Database()
 
 # NO NEED TO CHANGE ANYTHING BELOW THIS LINE
 def requires_cache(fields):
@@ -56,13 +60,54 @@ def requires_cache(fields):
         return decorated
     return decorator
 
+@app.route('/api/v0/get_all_questions', methods=['GET'])
+def get_all_questions():
+    try:
+        return db.fetch_all('SELECT * FROM question_data')
+    except Exception as e:
+        # Catch all other exceptions
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+    
+@app.route('/api/v0/create_question', methods=['POST'])
+def create_question():
+    try:
+        training_id = request.form.get('training_id')
+        training_data_type = request.form.get('training_data_type')
+        question = request.form.get('question')
+        content = request.form.get('content')
+        db.execute_query("TRUNCATE TABLE question_data")
+        db.execute_query("INSERT INTO question_data (training_id,training_data_type,question,content) VALUES (%s, %s, %s, %s)",(training_id, training_data_type,question,content))
+        return jsonify(status='OK',message='Successfully created')
+    except Exception as e:
+        # Catch all other exceptions
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
+@app.route('/api/v0/update_question', methods=['POST'])
+def update_question():
+   return db.fetch_all('SELECT * FROM question_data')
+
+@app.route('/api/v0/replace_question_data', methods=['GET'])
+def replace_question_data():
+    data_list = []
+    df = vn.get_training_data()
+    db.execute_query('TRUNCATE TABLE question_data')
+    for data in df.to_dict(orient='records'):
+        content = data['content'].replace(r'\"', '`')
+        question = ''
+        if not data['training_data_type'] == 'ddl':
+            question = data['question']
+        
+        db.execute_query("INSERT INTO question_data (training_id,training_data_type,question,content) VALUES (%s, %s, %s, %s)",(data['id'], data['training_data_type'],question,content))
+
+    return jsonify(status='OK',message='Successfully replaced data', data = data_list)
+
 @app.route('/api/v0/generate_questions', methods=['GET'])
 def generate_questions():
     return jsonify({
         "type": "question_list", 
         "questions": vn.generate_questions(),
         "header": "Here are some questions you can ask:"
-        })
+    })
 
 @app.route('/api/v0/generate_sql', methods=['GET'])
 def generate_sql():
@@ -167,7 +212,6 @@ def get_training_data():
         "id": "training_data",
         "df": df.to_json(orient='records'),
     })
-
 @app.route('/api/v0/remove_training_data', methods=['POST'])
 def remove_training_data():
     # Get id from the JSON body
